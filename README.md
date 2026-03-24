@@ -58,8 +58,8 @@ cd gcp-billing-guard
 
 ./setup.sh \
   --guard-project-id my-billing-guard \
-  --guard-billing-account 018952-AAAAAA-BBBBBB \
-  --managed-billing-accounts "01F84A-CCCCCC-DDDDDD,0153CD-EEEEEE-FFFFFF" \
+  --guard-billing-account XXXXXX-XXXXXX-XXXXXX \
+  --managed-billing-accounts "AAAAAA-AAAAAA-AAAAAA,BBBBBB-BBBBBB-BBBBBB" \
   --mode billing \
   --threshold 1.0
 ```

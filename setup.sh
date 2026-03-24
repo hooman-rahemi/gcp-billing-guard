@@ -8,8 +8,8 @@ set -euo pipefail
 # Usage:
 #   ./setup.sh \
 #     --guard-project-id my-billing-guard \
-#     --guard-billing-account 018952-C9A3E1-14BCE3 \
-#     --managed-billing-accounts "01F84A-83B1B7-3D80D6,0153CD-3369A1-85DD9C" \
+#     --guard-billing-account XXXXXX-XXXXXX-XXXXXX \
+#     --managed-billing-accounts "AAAAAA-AAAAAA-AAAAAA,BBBBBB-BBBBBB-BBBBBB" \
 #     --region us-central1 \
 #     --threshold 1.0 \
 #     --mode billing
@@ -52,8 +52,8 @@ Enforcement modes:
 Example:
   ./setup.sh \\
     --guard-project-id billing-guard-123 \\
-    --guard-billing-account 018952-AAAAAA-BBBBBB \\
-    --managed-billing-accounts "01F84A-CCCCCC-DDDDDD,0153CD-EEEEEE-FFFFFF" \\
+    --guard-billing-account XXXXXX-XXXXXX-XXXXXX \\
+    --managed-billing-accounts "AAAAAA-AAAAAA-AAAAAA,BBBBBB-BBBBBB-BBBBBB" \\
     --mode api
 EOF
   exit 1
