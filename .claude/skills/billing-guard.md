@@ -1,6 +1,6 @@
 # Skill: billing-guard
 
-Set up a GCP Billing Guard — a dedicated project with a Cloud Function that automatically disables billing on all managed projects when budget thresholds are exceeded.
+Set up a GCP Billing Guard — a dedicated project with a Cloud Function that automatically enforces spending limits on all managed projects when budget thresholds are exceeded.
 
 ## When to use
 
@@ -15,122 +15,95 @@ Use this skill when the user wants to:
 The user must:
 1. Be authenticated with `gcloud` (`gcloud auth login`)
 2. Have Owner/Editor permissions on the billing accounts they want to protect
-3. Have a **separate** billing account for the guard project (so disabling billing on protected projects doesn't kill the guard)
+3. Have a **separate** billing account for the guard project
 
 ## Setup flow
 
 ### Step 1: Gather information
 
 Ask the user for:
-1. **Guard project ID** — a globally unique GCP project ID for the guard (e.g., `billing-guard-acme`). Check if it already exists first.
-2. **Guard billing account** — the billing account to use for the guard project itself. This MUST be different from the accounts being protected. List their accounts with `gcloud billing accounts list` to help them choose.
-3. **Managed billing accounts** — comma-separated list of billing account IDs to protect. List with `gcloud billing accounts list`.
-4. **Region** — default `us-central1`
-5. **Threshold** — budget ratio to trigger at (default `1.0` = 100%)
+1. **Guard project ID** — globally unique GCP project ID (e.g., `billing-guard-acme`)
+2. **Guard billing account** — MUST be different from the accounts being protected. List with `gcloud billing accounts list`.
+3. **Managed billing accounts** — comma-separated list. List with `gcloud billing accounts list`.
+4. **Enforcement mode:**
+   - `billing` (default) — nuclear: detach billing, all services stop. For sandboxes/dev.
+   - `api` — surgical: disable expensive APIs, keep storage/auth alive. For production.
+5. **Region** — default `us-central1`
+6. **Threshold** — default `1.0` (100%). Recommend setting budget target 25-50% below actual max due to billing latency.
 
 ### Step 2: Run setup
-
-Run the setup script from the repo root:
 
 ```bash
 ./setup.sh \
   --guard-project-id <ID> \
-  --guard-billing-account <GUARD_BILLING_ACCOUNT> \
+  --guard-billing-account <ACCOUNT> \
   --managed-billing-accounts "<ACCOUNT1>,<ACCOUNT2>" \
-  --region <REGION> \
-  --threshold <THRESHOLD>
+  --mode <billing|api> \
+  --threshold <FLOAT>
 ```
 
 ### Step 3: Point budgets to the guard
 
-After the function is deployed, update each budget to publish to the guard's Pub/Sub topic.
+Update each budget to publish to the guard's topic. Include both actual and forecasted spend thresholds:
 
-For each managed billing account:
 ```bash
-# List budgets
-gcloud billing budgets list --billing-account=<ACCOUNT_ID>
-
-# Update each budget
-gcloud billing budgets update "billingAccounts/<ACCOUNT_ID>/budgets/<BUDGET_ID>" \
-  --notifications-rule-pubsub-topic="projects/<GUARD_PROJECT_ID>/topics/budget-alerts"
+gcloud billing budgets update "billingAccounts/<ACCOUNT>/budgets/<BUDGET_ID>" \
+  --notifications-rule-pubsub-topic="projects/<GUARD_PROJECT>/topics/budget-alerts"
 ```
 
-If a billing account has no budget yet, create one:
+If no budget exists, create one with recommended thresholds:
+
 ```bash
 gcloud billing budgets create \
-  --billing-account=<ACCOUNT_ID> \
+  --billing-account=<ACCOUNT> \
   --display-name="Monthly budget" \
   --budget-amount=<AMOUNT><CURRENCY> \
   --threshold-rule=percent=0.5,basis=current-spend \
   --threshold-rule=percent=0.8,basis=current-spend \
+  --threshold-rule=percent=0.9,basis=current-spend \
   --threshold-rule=percent=1.0,basis=current-spend \
-  --notifications-rule-pubsub-topic="projects/<GUARD_PROJECT_ID>/topics/budget-alerts"
+  --threshold-rule=percent=0.5,basis=forecasted-spend \
+  --threshold-rule=percent=0.9,basis=forecasted-spend \
+  --notifications-rule-pubsub-topic="projects/<GUARD_PROJECT>/topics/budget-alerts"
 ```
+
+IMPORTANT: Advise setting the budget amount 25-50% below the actual spending limit. GCP billing data lags up to 24 hours — charges continue accumulating after the kill switch fires.
 
 ### Step 4: Verify
 
-Test with a synthetic message:
 ```bash
-gcloud pubsub topics publish budget-alerts --project=<GUARD_PROJECT_ID> \
+gcloud pubsub topics publish budget-alerts --project=<GUARD_PROJECT> \
   --message='{"budgetDisplayName":"test","costAmount":50,"budgetAmount":100,"currencyCode":"USD"}'
 
-# Wait 15 seconds, then check logs
-gcloud functions logs read stopBilling --project=<GUARD_PROJECT_ID> --region=<REGION> --limit=10
+sleep 15
+
+gcloud functions logs read stopBilling --project=<GUARD_PROJECT> --region=<REGION> --limit=10
 ```
 
-The logs should show the notification was parsed and show "No action" since 50 < 100.
+## Adding a new billing account
 
-## Adding a new billing account later
+1. Get the guard's service account
+2. Grant appropriate IAM role (billing.user for billing mode, serviceusage.serviceUsageAdmin for api mode)
+3. Update the MANAGED_BILLING_ACCOUNTS env var on the function
+4. Create/update budgets on the new account
 
-To add a new billing account to an existing guard:
+## Key warnings
 
-1. Get the guard's service account:
-```bash
-gcloud functions describe stopBilling --project=<GUARD_PROJECT_ID> --region=<REGION> --format='value(serviceConfig.serviceAccountEmail)'
-```
-
-2. Grant it billing.admin on the new account:
-```bash
-gcloud billing accounts add-iam-policy-binding <NEW_ACCOUNT_ID> \
-  --member="serviceAccount:<SA_EMAIL>" \
-  --role="roles/billing.admin"
-```
-
-3. Update the function's env var:
-```bash
-gcloud functions deploy stopBilling \
-  --project=<GUARD_PROJECT_ID> \
-  --region=<REGION> \
-  --gen2 \
-  --update-env-vars="MANAGED_BILLING_ACCOUNTS=<OLD_ACCOUNTS>,<NEW_ACCOUNT_ID>"
-```
-
-4. Create/update budgets on the new account to publish to `projects/<GUARD_PROJECT_ID>/topics/budget-alerts`.
+- **billing mode is destructive:** VMs get SIGKILL, data freezes, potential permanent deletion if billing stays off. Warn the user clearly.
+- **Billing latency:** Up to 24h. Budget target should be well below actual max.
+- **Guard must be on separate billing:** If the guard dies with the projects, it's useless.
 
 ## Architecture
 
 ```
-billing-guard project (separate billing account — pennies/month)
-  └── Cloud Function: stopBilling (Node.js, 2nd gen, 256MB)
-       └── Eventarc trigger on Pub/Sub topic: budget-alerts
-            ↑
-            ├── Billing Account A budget → publishes here
-            ├── Billing Account B budget → publishes here
-            └── Billing Account C budget → publishes here
+billing-guard project (separate billing account)
+  ├── Cloud Function: stopBilling
+  ├── Firestore: velocity tracking (spend avalanche detection)
+  └── Pub/Sub topic: budget-alerts
+       ↑
+       └── All budget alerts publish here
 
-When triggered:
-  1. Parse budget notification from CloudEvent
-  2. Check if cost/budget ratio exceeds threshold
-  3. If yes: list all projects under the billing account
-  4. Disable billing on each project (except the guard itself)
+Two enforcement paths:
+  billing mode: detach billing → all services stop
+  api mode:     disable compute/dataflow/vertex AI → storage stays alive
 ```
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Function not triggering | No Pub/Sub subscription | Redeploy the function with `--trigger-topic=budget-alerts` |
-| "No message data" in logs | Wrong CloudEvent format | The function handles multiple formats; check if Eventarc trigger exists |
-| "Missing costAmount" | Notification schema mismatch | Ensure budget uses `schemaVersion: 1.0` |
-| "Failed to list projects" | Missing IAM permissions | Grant `billing.admin` to the function's SA on the billing account |
-| Function killed with the rest | Guard on same billing account | The guard MUST be on a separate billing account |

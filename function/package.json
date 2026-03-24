@@ -1,10 +1,11 @@
 {
   "name": "gcp-billing-guard",
-  "version": "1.0.0",
-  "description": "Cloud Function that disables billing when budget thresholds are exceeded",
+  "version": "2.0.0",
+  "description": "Cloud Function that enforces billing limits via account detachment or targeted API disablement",
   "main": "index.js",
   "dependencies": {
-    "google-auth-library": "^9.0.0"
+    "google-auth-library": "^9.0.0",
+    "@google-cloud/firestore": "^7.0.0"
   },
   "engines": {
     "node": ">=20"
